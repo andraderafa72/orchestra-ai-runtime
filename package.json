@@ -1,0 +1,39 @@
+{
+  "name": "orchestra-ai-runtime",
+  "version": "0.1.0",
+  "description": "Framework-free Node.js runtime for streaming conversations with local AI models and agent CLIs.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "ollama",
+    "claude",
+    "cursor",
+    "runtime",
+    "agents"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "typescript": "~6.0.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
