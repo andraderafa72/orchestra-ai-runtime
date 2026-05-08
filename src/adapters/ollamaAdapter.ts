@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { localModelCapabilities } from "../capabilities.js";
-import type { AIProviderAdapter, ModelInfo, SessionConfig, ToolCapabilities } from "../types.js";
-import type { ProcessSession } from "../processSession.js";
+import { localModelCapabilities } from "../runtime/capabilities.js";
+import type { AIProviderAdapter, ModelInfo, SessionConfig, ToolCapabilities } from "../types/index.js";
+import type { ProcessSession } from "../runtime/processSession.js";
 import { commandExists, commandProducesOutput } from "../utils/command.js";
 
 export class OllamaAdapter implements AIProviderAdapter {

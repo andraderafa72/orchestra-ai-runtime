@@ -8,10 +8,10 @@ import type {
   SessionConfig,
   SessionEventMap,
   SessionStatus,
-} from "./types.js";
-import { createSessionId } from "./utils/ids.js";
-import { cleanToken, cleanCliOutput } from "./utils/output.js";
-import { buildConversationPrompt, createChatMessage, normalizeMessages } from "./utils/prompts.js";
+} from "../types/index.js";
+import { createSessionId } from "../utils/ids.js";
+import { cleanToken, cleanCliOutput } from "../utils/output.js";
+import { buildConversationPrompt, createChatMessage, normalizeMessages } from "../utils/prompts.js";
 
 const DEFAULT_KILL_TIMEOUT_MS = 2_500;
 const DEFAULT_RESPONSE_IDLE_MS = 700;

@@ -1,4 +1,4 @@
-import { LocalAIProviderRuntime } from "./localAIProviderRuntime.js";
+import { LocalAIProviderRuntime } from "./runtime/localAIProviderRuntime.js";
 
 export type {
   AIProviderAdapter,
@@ -13,12 +13,12 @@ export type {
   SessionEventMap,
   SessionStatus,
   ToolCapabilities,
-} from "./types.js";
+} from "./types/index.js";
 
-export { localAgentCapabilities, localModelCapabilities } from "./capabilities.js";
-export { ProcessSession } from "./processSession.js";
-export { ProvidersRegistry, createDefaultProvidersRegistry } from "./providersRegistry.js";
-export { LocalAIProviderRuntime } from "./localAIProviderRuntime.js";
+export { localAgentCapabilities, localModelCapabilities } from "./runtime/capabilities.js";
+export { ProcessSession } from "./runtime/processSession.js";
+export { ProvidersRegistry, createDefaultProvidersRegistry } from "./runtime/providersRegistry.js";
+export { LocalAIProviderRuntime } from "./runtime/localAIProviderRuntime.js";
 export { OllamaAdapter } from "./adapters/ollamaAdapter.js";
 export { ClaudeCliAdapter } from "./adapters/claudeCliAdapter.js";
 export { CursorCliAdapter } from "./adapters/cursorCliAdapter.js";

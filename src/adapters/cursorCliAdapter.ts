@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { localAgentCapabilities } from "../capabilities.js";
-import type { AIProviderAdapter, ModelInfo, SessionConfig, ToolCapabilities } from "../types.js";
-import type { ProcessSession } from "../processSession.js";
+import { localAgentCapabilities } from "../runtime/capabilities.js";
+import type { AIProviderAdapter, ModelInfo, SessionConfig, ToolCapabilities } from "../types/index.js";
+import type { ProcessSession } from "../runtime/processSession.js";
 import { commandExists } from "../utils/command.js";
 
 const CURSOR_CLI_CANDIDATES = ["cursor-agent", "cursor"];

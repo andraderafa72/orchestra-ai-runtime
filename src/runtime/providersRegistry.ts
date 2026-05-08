@@ -1,7 +1,7 @@
-import type { AIProviderAdapter, AIProviderType } from "./types.js";
-import { OllamaAdapter } from "./adapters/ollamaAdapter.js";
-import { ClaudeCliAdapter } from "./adapters/claudeCliAdapter.js";
-import { CursorCliAdapter } from "./adapters/cursorCliAdapter.js";
+import type { AIProviderAdapter, AIProviderType } from "../types/index.js";
+import { OllamaAdapter } from "../adapters/ollamaAdapter.js";
+import { ClaudeCliAdapter } from "../adapters/claudeCliAdapter.js";
+import { CursorCliAdapter } from "../adapters/cursorCliAdapter.js";
 
 export class ProvidersRegistry {
   private readonly adapters = new Map<AIProviderType, AIProviderAdapter>();

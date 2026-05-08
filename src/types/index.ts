@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import type { ProcessSession } from "./processSession.js";
+import type { ProcessSession } from "../runtime/processSession.js";
 
 export type AIProviderType =
   | "ollama"
@@ -67,19 +67,12 @@ export interface ProviderDetectionResult {
 
 export interface AIProviderAdapter {
   provider: AIProviderType;
-
   category: AIProviderCategory;
-
   capabilities: ToolCapabilities;
-
   isInstalled(): Promise<boolean>;
-
   getAvailableModels(): Promise<ModelInfo[]>;
-
   createProcess(config: SessionConfig): ChildProcessWithoutNullStreams;
-
   sendMessage(session: ProcessSession, input: string): Promise<void>;
-
   stop(session: ProcessSession): Promise<void>;
 }
 

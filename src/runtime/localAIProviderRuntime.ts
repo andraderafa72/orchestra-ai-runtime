@@ -6,7 +6,7 @@ import type {
   ModelInfo,
   RuntimeEventMap,
   SessionConfig,
-} from "./types.js";
+} from "../types/index.js";
 import { ProcessSession } from "./processSession.js";
 import { ProvidersRegistry, createDefaultProvidersRegistry } from "./providersRegistry.js";
 

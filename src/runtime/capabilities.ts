@@ -1,4 +1,4 @@
-import type { ToolCapabilities } from "./types.js";
+import type { ToolCapabilities } from "../types/index.js";
 
 export const localModelCapabilities: ToolCapabilities = {
   streaming: true,

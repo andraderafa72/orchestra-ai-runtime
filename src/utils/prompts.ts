@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../types.js";
+import type { ChatMessage } from "../types/index.js";
 
 export function createChatMessage(role: ChatMessage["role"], content: string, createdAt = Date.now()): ChatMessage {
   return { role, content, createdAt };
