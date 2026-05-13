@@ -6,18 +6,19 @@ export const localModelCapabilities: ToolCapabilities = {
   embeddings: false,
   vision: false,
   toolCalling: false,
-  persistentSession: true,
+  stdoutFormat: "plain",
   multiModal: false,
   codeExecution: false,
 };
 
+/** Baseline capabilities for a local agent CLI (stream-json / NDJSON stdout). */
 export const localAgentCapabilities: ToolCapabilities = {
   streaming: true,
-  jsonMode: false,
+  jsonMode: true,
   embeddings: false,
   vision: false,
   toolCalling: true,
-  persistentSession: true,
-  multiModal: false,
+  stdoutFormat: "ndjson",
+  multiModal: true,
   codeExecution: true,
 };

@@ -9,10 +9,7 @@ const CURSOR_CLI_CANDIDATES = ["cursor-agent", "cursor"];
 export class CursorCliAdapter implements AIProviderAdapter {
   readonly provider = "cursor-cli" as const;
   readonly category = "local-agent" as const;
-  readonly capabilities: ToolCapabilities = {
-    ...localAgentCapabilities,
-    multiModal: true,
-  };
+  readonly capabilities: ToolCapabilities = localAgentCapabilities;
 
   private command = process.env.ORCHESTRA_CURSOR_CLI_COMMAND ?? CURSOR_CLI_CANDIDATES[0]!;
 
@@ -40,8 +37,17 @@ export class CursorCliAdapter implements AIProviderAdapter {
     ];
   }
 
-  createProcess(config: SessionConfig): ChildProcessWithoutNullStreams {
-    const args = [...(config.args ?? [])];
+  createTurnProcess(config: SessionConfig, _prompt: string): ChildProcessWithoutNullStreams {
+    const args: string[] = [
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
+    ];
+    if (config.modelId && config.modelId !== "cursor-agent") {
+      args.push("--model", config.modelId);
+    }
+    args.push(...(config.args ?? []));
     if (this.command === "cursor" && !args.includes("agent")) {
       args.unshift("agent");
     }
@@ -52,10 +58,6 @@ export class CursorCliAdapter implements AIProviderAdapter {
       stdio: "pipe",
       windowsHide: true,
     });
-  }
-
-  async sendMessage(session: ProcessSession, input: string): Promise<void> {
-    await session.writeToStdin(`${input.trim()}\n`);
   }
 
   async stop(session: ProcessSession): Promise<void> {

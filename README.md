@@ -2,7 +2,7 @@
 
 Orchestra AI Runtime is a TypeScript runtime for orchestrating local AI models, AI agents, and conversational CLI tools through isolated process management. It is built for Node.js, does not depend on a framework, and stays out of your UI layer so you can embed it in desktop apps, IDE extensions, terminals, or automation workflows.
 
-It supports streaming, persistent sessions, process lifecycle management, multi-provider orchestration, and extensible adapters.
+It supports streaming, logical chat sessions (in-memory history), one subprocess per user turn, lifecycle management, multi-provider orchestration, and extensible adapters.
 
 ---
 
@@ -29,6 +29,11 @@ Orchestra provides a single runtime abstraction layer that can sit in front of t
 npm install orchestra-ai-runtime
 ```
 
+### Upgrading to 0.3.0
+
+- **Removed** `ephemeralLocalAgentCapabilities` (it was a deprecated alias). Use `localAgentCapabilities` instead.
+- **`ProcessSession.send`** is now synchronous (`void`). Callers that used `await session.send(...)` can drop `await` or keep it (awaiting `undefined` is still valid).
+
 ---
 
 ## ⚙️ Core Features
@@ -37,7 +42,7 @@ npm install orchestra-ai-runtime
 | --- | --- |
 | Multi-provider runtime | One abstraction over local models and agent CLIs |
 | Streaming | Token-by-token output instead of waiting for the full response |
-| Sessions | Persistent conversational state per process |
+| Sessions | In-memory conversation state; **one new child process per `send()`** for every built-in provider (`stdoutFormat`: plain for Ollama, NDJSON for agent CLIs) |
 | Lifecycle management | Safe startup, shutdown, and cleanup |
 | Registry | Internal tracking of every active session |
 | Typing | Strong TypeScript support across public APIs |
@@ -104,10 +109,10 @@ Represents a single conversational process and owns the full conversation lifecy
 
 | Responsibility | Description |
 | --- | --- |
-| I/O | Manages stdin and stdout for the child process |
-| Streaming | Emits tokens as they arrive |
-| State | Tracks status, timestamps, and messages |
-| Cleanup | Flushes buffered output and closes the process safely |
+| I/O | Manages stdin/stdout; agent CLIs use stdin for the full prompt each turn |
+| Streaming | Emits `token` from raw stdout (Ollama) or from NDJSON lines (`stream-json` for agents) |
+| State | Tracks status, timestamps, and messages in memory across turns |
+| Cleanup | Each turn’s subprocess exits after the model responds; `destroySession` / `shutdown` still terminates an in-flight child if needed |
 
 ---
 
@@ -132,11 +137,10 @@ import {
 
 await localAIProviderRuntime.initialize();
 
-const session =
-  await localAIProviderRuntime.createSession({
-    provider: "ollama",
-    modelId: "llama3"
-  });
+const session = localAIProviderRuntime.createSession({
+  provider: "ollama",
+  modelId: "llama3",
+});
 
 session.on("token", ({ token }) => {
   process.stdout.write(token);
@@ -153,7 +157,9 @@ await localAIProviderRuntime.shutdown();
 
 ## 🧾 Session Configuration
 
-`createSession()` accepts a `SessionConfig` object. The table below covers the fields you will use most often.
+`createSession()` accepts a `SessionConfig` object. It returns a `ProcessSession` or **`null`** if the provider id is not registered (an `error` event is emitted on the runtime with `session: null`). Runtime and session errors are reported through **`error` events** rather than thrown, except for API misuse in app code that ignores a `null` session.
+
+The table below covers the fields you will use most often.
 
 | Field | Meaning |
 | --- | --- |
@@ -164,8 +170,7 @@ await localAIProviderRuntime.shutdown();
 | `systemPrompt` | Prepends guidance to the in-memory conversation history |
 | `messages` | Seeds the session with initial conversation history |
 | `args` | Forwards extra CLI arguments to the provider process |
-| `killTimeoutMs` | Controls how long to wait before falling back to `SIGKILL` |
-| `responseIdleMs` | Sets the idle window used to flush buffered assistant output |
+| `killTimeoutMs` | Controls how long to wait before falling back to `SIGKILL` when tearing down a session |
 
 `initialize()` is recommended before creating sessions because it detects installed providers and loads available models.
 
@@ -186,7 +191,7 @@ Orchestra is built on Node.js `EventEmitter`. Runtime-level events tell you when
 | Runtime | `providersChanged`, `modelsChanged`, `sessionCreated`, `sessionDestroyed`, `shutdown` |
 | Session | `token`, `message`, `error`, `started`, `closed`, `exit`, `statusChanged` |
 
-`token` delivers raw streamed chunks after ANSI cleanup, while `message` emits a buffered assistant message once the response has gone idle.
+`token` delivers streamed assistant text (ANSI-cleaned). `message` is emitted when the turn subprocess exits and the assistant reply is finalized (aggregated NDJSON text for agents, plain stdout for Ollama).
 
 ---
 
@@ -200,9 +205,9 @@ Orchestra safely manages process creation, cleanup, shutdown, `SIGTERM`, and `SI
 
 | Provider | Behavior |
 | --- | --- |
-| `ollama` | Requires `modelId` and launches `ollama run <modelId>` |
-| `claude-cli` | Calls the local `claude` command and forwards `args` unchanged |
-| `cursor-cli` | Prefers `cursor-agent`, and falls back to `cursor agent` when needed |
+| `ollama` | `ollama run <modelId>` per `send()`; full conversation prompt on stdin; stdout parsed as **plain** text |
+| `claude-cli` | Spawns `claude -p --output-format stream-json --include-partial-messages` per user message; full prompt on stdin; extra `args` are appended |
+| `cursor-cli` | Spawns `cursor-agent` (or `cursor agent`) with `-p --output-format stream-json --stream-partial-output` per message; extra `args` appended |
 | Cursor CLI path | Set `ORCHESTRA_CURSOR_CLI_COMMAND` if your binary name is different |
 
 ---
@@ -217,14 +222,14 @@ Most AI CLIs are inconsistent, stateful, hard to automate, difficult to integrat
 
 ### 🖥️ AI Desktop Applications
 
-Orchestra works well when you want a local AI assistant embedded in Electron, Tauri, or another desktop shell. The runtime owns the child process, while your UI only reacts to session events.
+Orchestra works well when you want a local AI assistant embedded in Electron, Tauri, or another desktop shell. Each `send()` spawns a provider subprocess for that turn; your UI consumes `token` / `message` events from `ProcessSession`.
 
 ```ts
 import { localAIProviderRuntime } from "orchestra-ai-runtime";
 
 await localAIProviderRuntime.initialize();
 
-const session = await localAIProviderRuntime.createSession({
+const session = localAIProviderRuntime.createSession({
   provider: "ollama",
   modelId: "llama3",
   cwd: "/home/user/projects/demo",
@@ -244,15 +249,16 @@ For IDEs, Orchestra lets you forward the active file context into a CLI agent an
 ```ts
 import { localAIProviderRuntime } from "orchestra-ai-runtime";
 
+await localAIProviderRuntime.initialize();
+
 const insertText = (value: string) => {
   // Replace this with your editor integration.
   process.stdout.write(value);
 };
 
-const session = await localAIProviderRuntime.createSession({
+const session = localAIProviderRuntime.createSession({
   provider: "claude-cli",
   cwd: "/workspace/app",
-  args: ["--print"],
   systemPrompt: "You are helping with a TypeScript code review.",
 });
 
@@ -267,12 +273,14 @@ await session.send(
 
 ### 🤖 AI Agent Systems
 
-Use Orchestra when you need persistent sessions for autonomous agents or multi-step workflows. The runtime keeps the process alive, so the agent can continue a conversation across turns.
+Use Orchestra when you need **in-memory** multi-step workflows. Every built-in adapter starts a **new subprocess on each `send()`** (Ollama included). `ProcessSession.messages` holds the transcript so the next prompt includes full context.
 
 ```ts
 import { localAIProviderRuntime } from "orchestra-ai-runtime";
 
-const session = await localAIProviderRuntime.createSession({
+await localAIProviderRuntime.initialize();
+
+const session = localAIProviderRuntime.createSession({
   provider: "cursor-cli",
   args: ["--model", "auto"],
   systemPrompt: "Act as a coding agent. Ask before making destructive changes.",
@@ -288,9 +296,11 @@ If you are building a chat product, Orchestra gives you a streaming session mode
 ```ts
 import { localAIProviderRuntime } from "orchestra-ai-runtime";
 
+await localAIProviderRuntime.initialize();
+
 const transcript: string[] = [];
 
-const session = await localAIProviderRuntime.createSession({
+const session = localAIProviderRuntime.createSession({
   provider: "ollama",
   modelId: "llama3",
   messages: [
@@ -312,7 +322,9 @@ For terminal tools, Orchestra can act as the bridge between your CLI and the pro
 ```ts
 import { localAIProviderRuntime } from "orchestra-ai-runtime";
 
-const session = await localAIProviderRuntime.createSession({
+await localAIProviderRuntime.initialize();
+
+const session = localAIProviderRuntime.createSession({
   provider: "claude-cli",
 });
 
@@ -330,7 +342,9 @@ You can also use Orchestra inside scripts and CI workflows when you need AI-assi
 ```ts
 import { localAIProviderRuntime } from "orchestra-ai-runtime";
 
-const session = await localAIProviderRuntime.createSession({
+await localAIProviderRuntime.initialize();
+
+const session = localAIProviderRuntime.createSession({
   provider: "cursor-cli",
   cwd: process.cwd(),
   systemPrompt: "Return concise output only.",

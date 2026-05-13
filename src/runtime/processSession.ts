@@ -12,9 +12,10 @@ import type {
 import { createSessionId } from "../utils/ids.js";
 import { cleanToken, cleanCliOutput } from "../utils/output.js";
 import { buildConversationPrompt, createChatMessage, normalizeMessages } from "../utils/prompts.js";
+import { extractAssistantTextChunk } from "../utils/agentStreamJson.js";
+import { normalizeError } from "../utils/normalizeError.js";
 
 const DEFAULT_KILL_TIMEOUT_MS = 2_500;
-const DEFAULT_RESPONSE_IDLE_MS = 700;
 
 export class ProcessSession extends EventEmitter {
   readonly id: string;
@@ -28,11 +29,14 @@ export class ProcessSession extends EventEmitter {
   messages: ChatMessage[];
   updatedAt: number;
 
-  private assistantBuffer = "";
-  private responseFlushTimer: NodeJS.Timeout | null = null;
+  private startedEmitted = false;
 
   constructor(adapter: AIProviderAdapter, config: SessionConfig) {
     super();
+    // Node.js throws if `error` is emitted with no listeners on the emitter.
+    this.on("error", function orchestraRuntimeDefaultErrorSink() {
+      /* optional app listeners still run; this only guarantees listenerCount >= 1 */
+    });
     this.adapter = adapter;
     this.provider = adapter.provider;
     this.config = config;
@@ -67,40 +71,196 @@ export class ProcessSession extends EventEmitter {
   }
 
   start(): void {
-    if (this.process && !this.process.killed) return;
     if (this.status === "closed") {
-      throw new Error(`Cannot restart closed session ${this.id}`);
+      this.emit("error", {
+        session: this,
+        error: new Error(`Cannot restart closed session ${this.id}`),
+      });
+      return;
     }
-
-    try {
-      this.process = this.adapter.createProcess(this.config);
-      this.bindProcess(this.process);
-      this.setStatus("running");
+    if (!this.startedEmitted) {
+      this.startedEmitted = true;
       this.emit("started", { session: this });
-    } catch (error) {
-      this.setStatus("error");
-      this.emit("error", { session: this, error: toError(error) });
-      throw error;
     }
   }
 
-  async send(input: string): Promise<void> {
+  send(input: string): void {
     const trimmed = input.trim();
     if (!trimmed) return;
+
     if (this.status === "closed") {
-      throw new Error(`Cannot send message to closed session ${this.id}`);
+      this.emit("error", {
+        session: this,
+        error: new Error(`Cannot send message to closed session ${this.id}`),
+      });
+      return;
     }
-    if (!this.process || this.process.killed) {
-      this.start();
+
+    if (this.process && !this.process.killed) {
+      this.emit("error", {
+        session: this,
+        error: new Error(`Session ${this.id} is busy with another turn`),
+      });
+      return;
     }
 
     this.messages.push(createChatMessage("user", trimmed));
     this.touch();
     this.setStatus("running");
-    this.resetAssistantBuffer();
 
     const prompt = buildConversationPrompt(this.messages);
-    await this.adapter.sendMessage(this, prompt);
+
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = this.adapter.createTurnProcess(this.config, prompt);
+    } catch (error) {
+      this.messages.pop();
+      this.setStatus("idle");
+      this.emit("error", { session: this, error: normalizeError(error) });
+      return;
+    }
+
+    this.process = child;
+
+    if (this.adapter.capabilities.stdoutFormat === "ndjson") {
+      this.bindNdjsonTurn(child, prompt);
+    } else {
+      this.bindPlainTextTurn(child, prompt);
+    }
+  }
+
+  private bindPlainTextTurn(child: ChildProcessWithoutNullStreams, prompt: string): void {
+    let accumulated = "";
+    const stderrChunks: string[] = [];
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      const { cleaned, raw } = cleanToken(chunk);
+      if (!cleaned) return;
+      accumulated += cleaned;
+      this.touch();
+      this.emit("token", { session: this, token: cleaned, raw });
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk.toString("utf8"));
+    });
+
+    child.on("error", (error) => {
+      this.emit("error", { session: this, error });
+    });
+
+    child.on("exit", (code, signal) => {
+      this.finalizeTurnChildExit(accumulated, stderrChunks.join(""), code, signal);
+    });
+
+    this.writePromptToStdin(child, prompt);
+  }
+
+  private bindNdjsonTurn(child: ChildProcessWithoutNullStreams, prompt: string): void {
+    let lineBuf = "";
+    let accumulated = "";
+    const stderrChunks: string[] = [];
+
+    const processLine = (trimmed: string) => {
+      if (!trimmed) return;
+      let obj: unknown;
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      const text = extractAssistantTextChunk(obj);
+      if (!text) return;
+      accumulated += text;
+      const { cleaned, raw } = cleanToken(text);
+      if (cleaned) {
+        this.touch();
+        this.emit("token", { session: this, token: cleaned, raw });
+      }
+    };
+
+    const flushLines = (finalize: boolean) => {
+      const parts = lineBuf.split("\n");
+      if (finalize) {
+        for (const line of parts) {
+          processLine(line.trim());
+        }
+        lineBuf = "";
+        return;
+      }
+      lineBuf = parts.pop() ?? "";
+      for (const line of parts) {
+        processLine(line.trim());
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      lineBuf += chunk.toString("utf8");
+      flushLines(false);
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk.toString("utf8"));
+    });
+
+    child.on("error", (error) => {
+      this.emit("error", { session: this, error });
+    });
+
+    child.on("exit", (code, signal) => {
+      flushLines(true);
+      this.finalizeTurnChildExit(accumulated, stderrChunks.join(""), code, signal);
+    });
+
+    this.writePromptToStdin(child, prompt);
+  }
+
+  private finalizeTurnChildExit(
+    accumulatedStream: string,
+    stderrJoined: string,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    const stderrText = stderrJoined.trim();
+    const contentFromStream = accumulatedStream.trim();
+    const fallback = contentFromStream || (stderrText && code !== 0 ? stderrText : "");
+
+    this.process = null;
+
+    if (code !== 0) {
+      const msg =
+        stderrText ||
+        `Process exited with code ${code}${signal ? ` signal ${signal}` : ""}`;
+      this.emit("error", {
+        session: this,
+        error: new Error(msg.trim()),
+        stderr: stderrText || undefined,
+      });
+      this.setStatus("error");
+    } else if (fallback) {
+      this.addAssistantMessage(fallback);
+      this.setStatus("idle");
+    } else {
+      this.setStatus("idle");
+    }
+
+    this.emit("exit", { session: this, code, signal });
+  }
+
+  private writePromptToStdin(child: ChildProcessWithoutNullStreams, prompt: string): void {
+    try {
+      if (!child.stdin.writableEnded) {
+        child.stdin.write(prompt, "utf8");
+        child.stdin.end();
+      }
+    } catch (error) {
+      this.emit("error", { session: this, error: normalizeError(error) });
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async kill(): Promise<void> {
@@ -108,9 +268,6 @@ export class ProcessSession extends EventEmitter {
   }
 
   async terminate(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
-    this.clearResponseFlushTimer();
-    this.flushAssistantMessage();
-
     const child = this.process;
     if (!child || child.killed) {
       this.close();
@@ -139,13 +296,19 @@ export class ProcessSession extends EventEmitter {
   writeToStdin(value: string): Promise<void> {
     const child = this.process;
     if (!child || child.killed || !child.stdin.writable) {
-      throw new Error(`Session ${this.id} is not writable`);
+      this.emit("error", {
+        session: this,
+        error: new Error(`Session ${this.id} is not writable`),
+      });
+      return Promise.resolve();
     }
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve) => {
       child.stdin.write(value, (error) => {
-        if (error) reject(error);
-        else resolve();
+        if (error) {
+          this.emit("error", { session: this, error: normalizeError(error) });
+        }
+        resolve();
       });
     });
   }
@@ -163,74 +326,8 @@ export class ProcessSession extends EventEmitter {
     return message;
   }
 
-  private bindProcess(child: ChildProcessWithoutNullStreams): void {
-    child.stdout.on("data", (chunk: Buffer) => this.handleStdout(chunk));
-    child.stderr.on("data", (chunk: Buffer) => this.handleStderr(chunk));
-    child.on("error", (error) => {
-      this.setStatus("error");
-      this.emit("error", { session: this, error });
-    });
-    child.on("exit", (code, signal) => {
-      this.flushAssistantMessage();
-      this.emit("exit", { session: this, code, signal });
-      this.close();
-    });
-  }
-
-  private handleStdout(chunk: Buffer): void {
-    const { raw, cleaned } = cleanToken(chunk);
-    if (!cleaned) return;
-
-    this.assistantBuffer += cleaned;
-    this.touch();
-    this.emit("token", { session: this, token: cleaned, raw });
-    this.scheduleAssistantFlush();
-  }
-
-  private handleStderr(chunk: Buffer): void {
-    const { raw, cleaned } = cleanToken(chunk);
-    const stderr = cleaned || raw;
-    if (!stderr.trim()) return;
-
-    this.touch();
-    this.emit("error", {
-      session: this,
-      error: new Error(stderr.trim()),
-      stderr,
-    });
-  }
-
-  private scheduleAssistantFlush(): void {
-    this.clearResponseFlushTimer();
-    this.responseFlushTimer = setTimeout(() => {
-      this.flushAssistantMessage();
-      if (this.status === "running") {
-        this.setStatus("idle");
-      }
-    }, this.config.responseIdleMs ?? DEFAULT_RESPONSE_IDLE_MS);
-  }
-
-  private flushAssistantMessage(): void {
-    const content = this.assistantBuffer.trim();
-    this.resetAssistantBuffer();
-    if (!content) return;
-    this.addAssistantMessage(content);
-  }
-
-  private resetAssistantBuffer(): void {
-    this.clearResponseFlushTimer();
-    this.assistantBuffer = "";
-  }
-
-  private clearResponseFlushTimer(): void {
-    if (!this.responseFlushTimer) return;
-    clearTimeout(this.responseFlushTimer);
-    this.responseFlushTimer = null;
-  }
-
   private close(): void {
     if (this.status === "closed") return;
-    this.clearResponseFlushTimer();
     this.process = null;
     this.setStatus("closed");
     this.emit("closed", { session: this });
@@ -247,8 +344,4 @@ export class ProcessSession extends EventEmitter {
   private touch(): void {
     this.updatedAt = Date.now();
   }
-}
-
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }

@@ -1,6 +1,6 @@
 {
   "name": "orchestra-ai-runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-free Node.js runtime for streaming conversations with local AI models and agent CLIs.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,8 @@
   ],
   "scripts": {
     "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "keywords": [
     "ai",

@@ -32,8 +32,12 @@ const session = runtime.createSession({
     },
   ],
 });
+if (!session) {
+  console.error("createSession failed (provider not registered?)");
+  process.exit(1);
+}
 
-await session.send("Say hello in one sentence.");
+session.send("Say hello in one sentence.");
 
 setTimeout(async () => {
   await runtime.shutdown();

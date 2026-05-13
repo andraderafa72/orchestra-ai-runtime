@@ -9,6 +9,7 @@ import type {
 } from "../types/index.js";
 import { ProcessSession } from "./processSession.js";
 import { ProvidersRegistry, createDefaultProvidersRegistry } from "./providersRegistry.js";
+import { normalizeError } from "../utils/normalizeError.js";
 
 export class LocalAIProviderRuntime extends EventEmitter {
   selectedProvider: AIProviderType | null = null;
@@ -21,6 +22,10 @@ export class LocalAIProviderRuntime extends EventEmitter {
   constructor(providersRegistry = createDefaultProvidersRegistry()) {
     super();
     this.providersRegistry = providersRegistry;
+    // Node.js throws if `error` is emitted with no listeners on the emitter.
+    this.on("error", function orchestraRuntimeDefaultErrorSink() {
+      /* optional app listeners still run; this only guarantees listenerCount >= 1 */
+    });
   }
 
   override on<K extends keyof RuntimeEventMap>(eventName: K, listener: EventListener<RuntimeEventMap[K]>): this;
@@ -44,8 +49,12 @@ export class LocalAIProviderRuntime extends EventEmitter {
   }
 
   async initialize(): Promise<void> {
-    await this.detectInstalledProviders();
-    await this.loadAvailableModels();
+    try {
+      await this.detectInstalledProviders();
+      await this.loadAvailableModels();
+    } catch (error) {
+      this.emitErrorFromUnknown(error);
+    }
   }
 
   registerProvider(adapter: AIProviderAdapter): void {
@@ -56,8 +65,12 @@ export class LocalAIProviderRuntime extends EventEmitter {
     const installed: AIProviderAdapter[] = [];
 
     for (const adapter of this.providersRegistry.list()) {
-      if (await adapter.isInstalled()) {
-        installed.push(adapter);
+      try {
+        if (await adapter.isInstalled()) {
+          installed.push(adapter);
+        }
+      } catch (error) {
+        this.emitErrorFromUnknown(error);
       }
     }
 
@@ -77,7 +90,11 @@ export class LocalAIProviderRuntime extends EventEmitter {
 
     const models: ModelInfo[] = [];
     for (const adapter of providers) {
-      models.push(...await adapter.getAvailableModels());
+      try {
+        models.push(...await adapter.getAvailableModels());
+      } catch (error) {
+        this.emitErrorFromUnknown(error);
+      }
     }
 
     this.availableModels = models;
@@ -85,10 +102,14 @@ export class LocalAIProviderRuntime extends EventEmitter {
     return this.availableModels;
   }
 
-  createSession(config: SessionConfig): ProcessSession {
+  createSession(config: SessionConfig): ProcessSession | null {
     const adapter = this.providersRegistry.get(config.provider);
     if (!adapter) {
-      throw new Error(`Provider ${config.provider} is not registered`);
+      this.emit("error", {
+        session: null,
+        error: new Error(`Provider ${config.provider} is not registered`),
+      });
+      return null;
     }
 
     const session = new ProcessSession(adapter, config);
@@ -118,6 +139,10 @@ export class LocalAIProviderRuntime extends EventEmitter {
     await Promise.all([...this.sessions.keys()].map((sessionId) => this.destroySession(sessionId)));
     this.sessions.clear();
     this.emit("shutdown", undefined);
+  }
+
+  private emitErrorFromUnknown(error: unknown): void {
+    this.emit("error", { session: null, error: normalizeError(error) });
   }
 
   private bindSession(session: ProcessSession): void {

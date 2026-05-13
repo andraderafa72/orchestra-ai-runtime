@@ -30,7 +30,7 @@ export class OllamaAdapter implements AIProviderAdapter {
     }));
   }
 
-  createProcess(config: SessionConfig): ChildProcessWithoutNullStreams {
+  createTurnProcess(config: SessionConfig, _prompt: string): ChildProcessWithoutNullStreams {
     const model = config.modelId;
     if (!model) {
       throw new Error("Ollama sessions require config.modelId");
@@ -42,10 +42,6 @@ export class OllamaAdapter implements AIProviderAdapter {
       stdio: "pipe",
       windowsHide: true,
     });
-  }
-
-  async sendMessage(session: ProcessSession, input: string): Promise<void> {
-    await session.writeToStdin(`${input.trim()}\n`);
   }
 
   async stop(session: ProcessSession): Promise<void> {

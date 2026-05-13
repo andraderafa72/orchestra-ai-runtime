@@ -15,13 +15,17 @@ export type AIProviderType =
 
 export type AIProviderCategory = "local-model" | "local-agent";
 
+/** How `ProcessSession` parses each turn subprocess stdout. */
+export type ProviderStdoutFormat = "ndjson" | "plain";
+
 export interface ToolCapabilities {
   streaming: boolean;
   jsonMode: boolean;
   embeddings: boolean;
   vision: boolean;
   toolCalling: boolean;
-  persistentSession: boolean;
+  /** Streamed line-delimited JSON (e.g. `claude -p --output-format stream-json`) vs raw text chunks (e.g. Ollama). */
+  stdoutFormat: ProviderStdoutFormat;
   multiModal: boolean;
   codeExecution: boolean;
 }
@@ -53,7 +57,6 @@ export interface SessionConfig {
   messages?: ChatMessage[];
   args?: string[];
   killTimeoutMs?: number;
-  responseIdleMs?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -71,15 +74,18 @@ export interface AIProviderAdapter {
   capabilities: ToolCapabilities;
   isInstalled(): Promise<boolean>;
   getAvailableModels(): Promise<ModelInfo[]>;
-  createProcess(config: SessionConfig): ChildProcessWithoutNullStreams;
-  sendMessage(session: ProcessSession, input: string): Promise<void>;
+  /**
+   * Spawns one subprocess for this user turn. `ProcessSession` writes `prompt` to stdin and closes it.
+   */
+  createTurnProcess(config: SessionConfig, prompt: string): ChildProcessWithoutNullStreams;
   stop(session: ProcessSession): Promise<void>;
 }
 
 export interface SessionEventMap {
   token: { session: ProcessSession; token: string; raw: string };
   message: { session: ProcessSession; message: ChatMessage };
-  error: { session: ProcessSession; error: Error; stderr?: string };
+  /** `session` is null for errors raised before a session exists (e.g. invalid provider). */
+  error: { session: ProcessSession | null; error: Error; stderr?: string };
   started: { session: ProcessSession };
   closed: { session: ProcessSession };
   exit: { session: ProcessSession; code: number | null; signal: NodeJS.Signals | null };
